@@ -1,6 +1,6 @@
-# System Design Playbook — spoken-style answers to the 12 designs in Alex Xu's "System Design Interview" (Vol. 1)
+# System Design Playbook — spoken-style answers to the 25 designs in Alex Xu's "System Design Interview" (Vol. 1 and Vol. 2), plus two travel-marketplace designs
 
-The source is the PDF of the book (269 pages, 16 chapters). Chapters 1 to 3 are foundations and chapters 4 to
+The Volume 1 source is the PDF of the book (269 pages, 16 chapters). Chapters 1 to 3 are foundations and chapters 4 to
 15 are the twelve design questions. Each book chapter runs twenty to forty pages. The documents here condense
 each one to what a candidate can actually say in a 45 to 60 minute interview or a team design review, and they
 add the things the book leaves out: API contracts, the data model with its query patterns, a database choice
@@ -12,10 +12,13 @@ Each decision names the alternatives, says why one was picked for this system's 
 was given up. The standard they are held to is the pair of reference documents in this folder, the full notes
 and the cheat sheet condensed from them.
 
-Only one PDF was found at the path given. When the second volume is shared, its designs will be added in the
-same format.
+Both volumes are covered: documents 01 to 12 are Volume 1 and documents 13 to 25 are Volume 2, "System Design
+Interview: An Insider's Guide, Volume 2". The Volume 2 PDF on hand was scanned images with no text layer, so
+its designs were grounded in the chapter-by-chapter notes published at pagefy.io for the same book, which carry
+the book's requirements, numbers, API shapes and deep-dive content, together with the book's well-known
+designs.
 
-## The designs
+## The designs, Volume 1
 
 | # | System | Book chapter | Document | Where the real difficulty is |
 |---|---|---|---|---|
@@ -31,6 +34,35 @@ same format.
 | 10 | Search autocomplete | 13 | [10-search-autocomplete.md](10-search-autocomplete.md) | A constant-time read per keystroke, rebuilding without mutating under load, sharding a skewed prefix space |
 | 11 | YouTube | 14 | [11-youtube.md](11-youtube.md) | The transcoding graph with its resource manager, and delivery cost |
 | 12 | Google Drive | 15 | [12-google-drive.md](12-google-drive.md) | Strong metadata consistency with conflict handling, deduplication versus encryption, safe garbage collection |
+
+## The designs, Volume 2
+
+| # | System | Book chapter | Document | Where the real difficulty is |
+|---|---|---|---|---|
+| 13 | Proximity service | 1 | [13-proximity-service.md](13-proximity-service.md) | Turning two dimensions into one indexable key: geohash versus quadtree versus S2, and the cell-boundary problem |
+| 14 | Nearby friends | 2 | [14-nearby-friends.md](14-nearby-friends.md) | Fourteen million pub/sub deliveries a second from moving points, and resizing that cluster without losing too much |
+| 15 | Google Maps | 3 | [15-google-maps.md](15-google-maps.md) | Routing on a planet-sized graph with multi-level routing tiles, and live traffic re-routing |
+| 16 | Distributed message queue | 4 | [16-distributed-message-queue.md](16-distributed-message-queue.md) | Durability and ordering from commodity disks, consumer rebalancing, and where exactly-once stops |
+| 17 | Metrics monitoring and alerting | 5 | [17-metrics-monitoring-alerting.md](17-metrics-monitoring-alerting.md) | A million writes a second into a time-series store, pull versus push, and reliable yet quiet alerting |
+| 18 | Ad click event aggregation | 6 | [18-ad-click-event-aggregation.md](18-ad-click-event-aggregation.md) | Exactly-once counts for billing under late events, duplicates, hot ads and node crashes; nightly reconciliation |
+| 19 | Hotel reservation | 7 | [19-hotel-reservation.md](19-hotel-reservation.md) | Double booking: idempotency keys and optimistic locking versus pessimistic locks versus constraints |
+| 20 | Distributed email service | 8 | [20-distributed-email-service.md](20-distributed-email-service.md) | A metadata store no off-the-shelf database fits perfectly, and deliverability as reputation engineering |
+| 21 | S3-like object storage | 9 | [21-s3-like-object-storage.md](21-s3-like-object-storage.md) | Six nines at a sane cost: failure domains, replication versus erasure coding, packing small objects, safe GC |
+| 22 | Real-time gaming leaderboard | 10 | [22-real-time-gaming-leaderboard.md](22-real-time-gaming-leaderboard.md) | Rank for twenty-five million players in real time, and what breaks when sharding a sorted structure |
+| 23 | Payment system | 11 | [23-payment-system.md](23-payment-system.md) | Exactly-once money movement across four stateful systems, and reconciliation as the proof of correctness |
+| 24 | Digital wallet | 12 | [24-digital-wallet.md](24-digital-wallet.md) | Atomic cross-partition transfers at a million a second with replayable history: TC/C, sagas, event sourcing, Raft |
+| 25 | Stock exchange | 13 | [25-stock-exchange.md](25-stock-exchange.md) | Tens of microseconds with determinism: one server, shared-memory event store, sequencer, hot replicas |
+
+## Beyond the books: designs from the Agoda staff question bank
+
+These two are not in either volume. They come from the prompts collected in
+[agoda-staff-platform-and-system-design-question-bank.md](../agoda-interview/agoda-staff-platform-and-system-design-question-bank.md)
+and follow the same seventeen-section format and voice.
+
+| # | System | Bank prompts | Document | Where the real difficulty is |
+|---|---|---|---|---|
+| 26 | Flight search and booking with multi-supplier aggregation | B1, B3, B5, R1, R8, S9 | [26-flight-search-and-booking.md](26-flight-search-and-booking.md) | Metered, pull-only aggregation under freshness and cost pressure (per-supplier budgets, cache with stampede control, cheapest-wins dedupe, cursor paging), then quote versus commitment: re-price, hold, pay, confirm, reconcile |
+| 27 | Ride-sharing (Uber, Lyft) | S6 | [27-ride-sharing.md](27-ride-sharing.md) | Tens of thousands of location updates a second into a per-city geo index, and dispatch that never double-assigns a driver: one owner key with set-if-absent and expiry, sequential offers, conditional trip transitions, a sweeper for every stuck state |
 
 Supporting documents:
 
