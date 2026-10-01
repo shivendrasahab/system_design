@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant S as Supplier
+    participant G as API gateway
+    participant A as Supplier Booking API
+    participant R as Read model
+    S->>G: GET /v1/bookings?since=cursor and limit=200 with bearer token
+    G->>G: validate token, extract supplier_id, check token bucket
+    G->>A: forward with supplier_id from token, not from query
+    A->>R: select where supplier_id = X and version greater than cursor order by version limit 200
+    R-->>A: rows plus highest version seen
+    A-->>G: 200 with bookings[] and next_cursor, ETag set
+    G-->>S: response
+    Note over S,R: Next call sends next_cursor. A booking amended later reappears with a higher version, supplier upserts by booking_id.

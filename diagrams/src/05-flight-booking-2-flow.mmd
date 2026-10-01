@@ -1,0 +1,26 @@
+sequenceDiagram
+    participant U as Client
+    participant B as Booking service
+    participant S as Supplier adapter
+    participant P as Payment service
+    U->>B: POST /v1/flight-bookings with offer_id and Idempotency-Key
+    B->>S: re-price offer
+    S-->>B: current price and availability
+    alt price changed
+        B-->>U: 409 price changed, new price, confirm to continue
+    end
+    B->>S: create PNR with reference = booking_id
+    S-->>B: PNR locator, hold until T plus 30 min
+    B->>P: authorize amount, idempotency key = booking_id
+    P-->>B: authorized
+    B->>S: issue ticket for PNR
+    alt ticketing succeeds
+        S-->>B: ticket numbers
+        B->>P: capture
+        B-->>U: 200 TICKETED
+    else ticketing fails or times out
+        B->>P: void authorization
+        B->>S: release PNR if held
+        B-->>U: 409 could not ticket, offering next supplier for same flight
+    end
+    Note over B,S: Any supplier timeout moves the booking to PENDING_RESOLUTION. The resolver looks the PNR up by booking_id before anything is retried.

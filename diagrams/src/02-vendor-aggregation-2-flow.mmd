@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant U as Client
+    participant S as Search API
+    participant R as Redis
+    participant A as Aggregator
+    participant V as Vendor adapters
+    U->>S: search BKK to SIN, 12 Nov, 2 pax, economy
+    S->>R: GET merged:v3:BKK:SIN:2026-11-12:2:Y
+    R-->>S: miss
+    S->>R: SET NX lock:merged:... PX 3000
+    alt lock acquired
+        S->>A: aggregate(tuple, deadline 1500 ms)
+        par fan out
+            A->>V: adapter A search
+            A->>V: adapter B search
+            A->>V: adapter C search
+        end
+        V-->>A: A and B returned, C timed out
+        A->>A: normalise totals, dedupe by flight key, cheapest wins, keep fallbacks
+        A-->>S: offers, partial = true, missing = [C]
+        S->>R: SET merged key with TTL from volatility plus jitter, DEL lock
+    else lock held by another request
+        S->>R: wait briefly then GET merged key, or serve stale copy if present
+    end
+    S-->>U: page 1 with next_cursor, partial flag, price_valid_until per offer

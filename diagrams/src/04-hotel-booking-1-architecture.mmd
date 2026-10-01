@@ -1,0 +1,17 @@
+flowchart LR
+    C[Web and mobile clients] --> GW[API gateway]
+    GW --> SS[Search service]
+    SS --> IDX[(Search index<br/>geo, filters, price bands,<br/>coarse availability)]
+    SS --> AC[(Availability cache<br/>hotel, room type, date)]
+    GW --> BK[Booking service<br/>hold, confirm, cancel,<br/>idempotency]
+    BK --> INV[(Inventory DB<br/>relational, sharded by hotel_id)]
+    BK --> BDB[(Bookings DB<br/>state machine rows, outbox)]
+    BK --> PAY[Payment service]
+    PAY --> PSP[External PSP]
+    INV -->|CDC| K[Kafka]
+    BDB -->|outbox relay| K
+    K --> AC
+    K --> IDX
+    K --> DN[Notifications, hotel sync,<br/>analytics, ledger]
+    EXT[Hotel extranet and<br/>channel managers] --> INVAPI[Inventory API<br/>versioned upserts] --> INV
+    SW[Hold expiry sweeper] --> BK

@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant U as Client
+    participant B as Booking service
+    participant I as Inventory DB
+    participant D as Bookings DB
+    participant P as Payment service
+    U->>B: POST /v1/bookings with Idempotency-Key
+    B->>D: insert idempotency row, fails if key exists then return stored result
+    B->>I: BEGIN, UPDATE room_inventory SET reserved = reserved + 1 WHERE hotel, room type, date IN nights AND reserved + 1 <= total + allowance
+    I-->>B: affected rows
+    alt affected rows equals number of nights
+        B->>D: insert reservation PENDING with expires_at = now + 10 min, same transaction as outbox row
+        B->>I: COMMIT
+        B-->>U: 201 PENDING with reservation_id
+        U->>B: POST /v1/bookings/id/pay with payment token
+        B->>P: authorize and capture with idempotency key = reservation_id
+        P-->>B: captured
+        B->>D: reservation CONFIRMED plus outbox BookingConfirmed
+        B-->>U: 200 CONFIRMED
+    else fewer rows updated
+        B->>I: ROLLBACK
+        B-->>U: 409 sold out for those nights
+    end
+    Note over B,I: Sweeper later turns expired PENDING holds into EXPIRED and decrements reserved for each night.

@@ -1,0 +1,13 @@
+flowchart LR
+    S1[Message queue source] --> A1[Queue adapter]
+    S2[(MySQL source)] --> A2[CDC or polling adapter]
+    S3[CSV files on SFTP] --> A3[File adapter<br/>detect, checksum, parse]
+    A1 & A2 & A3 --> N[Normaliser<br/>common record schema,<br/>source id and offset]
+    N --> K[Kafka transactions-raw]
+    K --> V[Validator and deduplicator<br/>idempotent on source id plus record key]
+    V --> DB[(Transactions DB<br/>state: PENDING, APPROVED, REJECTED, SETTLED)]
+    UI[Review UI and API] --> DB
+    DB -->|outbox| K2[Kafka transactions-approved]
+    K2 --> BATCH[Settlement batcher<br/>daily file per bank]
+    BATCH --> SFTP[Bank SFTP<br/>atomic upload with done file]
+    SFTP --> ACK[Acknowledgement reader] --> DB

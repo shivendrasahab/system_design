@@ -1,0 +1,15 @@
+flowchart LR
+    C[Clients] --> CDN[CDN and static event page]
+    C --> GW[API gateway<br/>rate limit per user and IP,<br/>bot checks]
+    GW --> Q[Waiting room service<br/>issues signed queue tokens,<br/>admits at a fixed rate]
+    Q --> QS[(Redis<br/>queue position, admitted set,<br/>admission counter)]
+    GW --> BK[Booking service<br/>admits only valid tokens,<br/>hold, pay, confirm]
+    BK --> INV[(Seat inventory DB<br/>relational, one shard per event)]
+    BK --> BDB[(Orders DB<br/>state machine, idempotency, outbox)]
+    BK --> PAY[Payment service]
+    BDB -->|outbox relay| K[Kafka]
+    K --> N[Tickets, email, analytics, anti-fraud]
+    SW[Hold expiry sweeper] --> BK
+    SM[Seat map read service] --> SMC[(Seat map cache<br/>availability snapshot,<br/>refreshed every second)]
+    INV -->|CDC| K
+    K --> SMC

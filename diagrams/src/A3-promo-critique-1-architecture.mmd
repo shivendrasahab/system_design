@@ -1,0 +1,10 @@
+flowchart LR
+    ADM[Admin console] --> GW[API gateway<br/>auth, rate limit]
+    GW --> PA[Promo API<br/>POST create, PUT status,<br/>GET by id and list]
+    PA --> PDB[(Promo DB<br/>primary plus replicas,<br/>version column)]
+    PDB -->|CDC| K[Kafka promo-changed]
+    K --> PC[Promo cache projector] --> RC[(Redis<br/>active promos by market)]
+    BKG[Booking and pricing services] --> EV[Promo evaluation service<br/>stateless, horizontally scaled]
+    EV --> RC
+    EV --> RED[(Redemption counters<br/>atomic decrement with budget)]
+    EV -->|redemption events| K

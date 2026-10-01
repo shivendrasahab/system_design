@@ -1,0 +1,14 @@
+flowchart LR
+    subgraph core [Core booking domain]
+        BS[Booking service] --> BDB[(Booking DB<br/>OLTP primary)]
+        BDB -->|outbox relay or CDC| K[Kafka<br/>booking-changed events]
+    end
+    subgraph feed [Supplier feed domain]
+        K --> PJ[Projector]
+        PJ --> RM[(Supplier read model<br/>per supplier, versioned,<br/>indexed by check-in date)]
+        API[Supplier Booking API] --> RM
+        K --> WH[Webhook notifier<br/>optional push]
+    end
+    SUP[Supplier system] --> GW[API gateway<br/>OAuth2 client credentials,<br/>per-supplier token bucket]
+    GW --> API
+    WH -.signed webhook.-> SUP

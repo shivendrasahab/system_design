@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant B as Booking service
+    participant P as Payment service
+    participant D as Payments DB
+    participant S as PSP adapter
+    participant R as Pending resolver
+    B->>P: authorize 4,200 THB, Idempotency-Key = booking_id:1
+    P->>D: insert payment CREATED and idempotency row in one transaction
+    P->>D: insert attempt 1 with request body
+    P->>S: create payment intent, Idempotency-Key forwarded to PSP
+    S--xP: timeout after 8 s
+    P->>D: attempt 1 = TIMEOUT, payment = PENDING_PSP
+    P-->>B: 202 PENDING, poll or wait for event
+    R->>P: pick PENDING_PSP older than 30 s
+    P->>S: get payment intent by our idempotency key
+    S-->>P: status = requires_capture, amount 4,200
+    P->>D: payment = AUTHORIZED, ledger entries, outbox PaymentAuthorized, one transaction
+    P-->>B: PaymentAuthorized event via Kafka
+    Note over P,S: A timeout is never treated as failure and never retried blind. The PSP is asked what happened first.

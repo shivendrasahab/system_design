@@ -1,0 +1,9 @@
+flowchart LR
+    APP[Web and app servers] -->|view and booking events| K[Kafka hotel-events<br/>partitioned by hotel_id]
+    K --> F[Stream job<br/>per minute count-min sketch<br/>and top-k heap per region]
+    F --> RS[(Redis<br/>top-k lists per region and window,<br/>refreshed every minute)]
+    API[Trending API] --> RS
+    K --> DL[(Data lake)]
+    DL --> BATCH[Hourly batch job<br/>exact counts]
+    BATCH --> RS
+    BATCH --> CMP[Accuracy comparison<br/>approximate versus exact]

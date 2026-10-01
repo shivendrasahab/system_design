@@ -1,0 +1,10 @@
+flowchart LR
+    C[Client] --> GW[API gateway<br/>auth, per-client rate limit]
+    GW --> SA[Search API<br/>cursor pagination, request validation]
+    SA --> RC[(Redis<br/>results per search tuple,<br/>availability counts)]
+    SA --> IDX[(Search index<br/>geo, filters, price bands)]
+    SA --> RK[Ranking service]
+    INV[(Inventory and rates DB)] -->|CDC| K[Kafka]
+    K --> P1[Index updater] --> IDX
+    K --> P2[Availability projector] --> RC
+    SA -.on booking click.-> BK[Booking service<br/>re-checks inventory]

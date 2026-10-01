@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant U as Client
+    participant W as Waiting room
+    participant B as Booking service
+    participant I as Seat inventory DB
+    participant P as Payment service
+    U->>W: join queue for event E
+    W-->>U: signed queue token with position
+    loop every few seconds
+        U->>W: poll position
+        W-->>U: position, or admitted token with 5 minute validity
+    end
+    U->>B: POST /events/E/holds with admitted token, seat ids, Idempotency-Key
+    B->>B: verify token signature, event id and expiry
+    B->>I: UPDATE seat SET status = HELD, hold_id = ?, hold_expires_at = ? WHERE event_id = E AND seat_id IN (...) AND status = AVAILABLE
+    I-->>B: affected rows
+    alt affected rows equals requested seats
+        B-->>U: 201 hold with expiry
+        U->>B: POST /holds/id/pay
+        B->>P: authorize and capture, idempotency key = hold_id
+        P-->>B: captured
+        B->>I: UPDATE seat SET status = SOLD WHERE hold_id = ?
+        B-->>U: 200 tickets issued
+    else fewer rows
+        B->>I: ROLLBACK
+        B-->>U: 409 some seats already taken, with fresh availability
+    end

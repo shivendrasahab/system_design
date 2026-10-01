@@ -1,0 +1,18 @@
+flowchart LR
+    BK[Booking services<br/>hotel and flight] -->|authorize, capture, void, refund<br/>with idempotency key| PS[Payment service<br/>state machine, attempt log]
+    PS --> PDB[(Payments DB<br/>payment, attempt,<br/>idempotency, outbox)]
+    PS --> LG[(Ledger<br/>append-only double entry)]
+    PS --> RT[PSP router<br/>by currency, country,<br/>scheme, health]
+    RT --> P1[Stripe adapter]
+    RT --> P2[Adyen adapter]
+    RT --> P3[Local rails adapter]
+    P1 & P2 & P3 --> PSP[External PSPs]
+    PSP -->|signed webhooks| WH[Webhook receiver<br/>verify, dedupe on event id]
+    WH --> PS
+    PL[Pending poller] --> PS
+    PDB -->|outbox relay| K[Kafka payment events]
+    K --> BK
+    K --> RC[Reconciliation service]
+    PSP -->|daily settlement reports| RC
+    LG --> RC
+    RC --> OQ[Discrepancy queue<br/>finance operations]

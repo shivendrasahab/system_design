@@ -1,0 +1,14 @@
+flowchart LR
+    C[Client app or partner] --> GW[API gateway<br/>auth, rate limit]
+    GW --> SA[Search API<br/>cursor pagination]
+    SA --> RC[(Redis<br/>merged results per search tuple,<br/>raw results per vendor and tuple,<br/>stampede locks)]
+    SA --> AG[Aggregator<br/>fan out with deadline,<br/>normalise, dedupe, rank]
+    AG --> A1[Vendor adapter A]
+    AG --> A2[Vendor adapter B]
+    AG --> A3[Vendor adapter C]
+    A1 --> X1[Vendor A API]
+    A2 --> X2[Vendor B API]
+    A3 --> X3[Vendor C API]
+    AG --> OS[(Offers store<br/>recent quotes, fallbacks,<br/>volatility stats)]
+    RF[Refresher<br/>schedules pulls for popular routes<br/>by volatility and cost] --> AG
+    SA --> BK[Booking service<br/>re-price then hold]

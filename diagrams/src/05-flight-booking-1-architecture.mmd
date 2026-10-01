@@ -1,0 +1,16 @@
+flowchart LR
+    C[Clients] --> GW[API gateway]
+    GW --> SA[Search API] --> AG[Aggregator] --> AD[Supplier adapters<br/>one per airline, GDS or NDC source]
+    AD --> SUP[External suppliers]
+    SA --> RC[(Redis results cache)]
+    AG --> OS[(Offers store)]
+    GW --> BK[Booking service<br/>saga state machine,<br/>idempotency]
+    BK --> AD
+    BK --> PAY[Payment service<br/>authorize, capture, void]
+    PAY --> PSP[PSP]
+    BK --> BDB[(Bookings DB<br/>booking, step log, outbox)]
+    BDB -->|outbox relay| K[Kafka]
+    K --> RS[Pending resolver<br/>queries supplier by reference]
+    RS --> AD
+    RS --> BK
+    K --> DN[Email, ledger, analytics,<br/>supplier reconciliation]
