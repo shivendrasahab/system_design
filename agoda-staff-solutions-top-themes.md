@@ -73,7 +73,9 @@ change once twenty integrations depend on them.
 
 ### Proposed design
 
-![Supplier booking feed architecture](diagrams/01-supplier-booking-feed-1-architecture.svg)
+![Supplier booking feed architecture](diagrams/01-supplier-booking-feed-1-architecture.png)
+
+*Vector version: [01-supplier-booking-feed-1-architecture.svg](diagrams/01-supplier-booking-feed-1-architecture.svg)*
 
 The booking service is unchanged. Every change to a booking produces an event, captured either through a
 transactional outbox table or through change data capture on the database log. I do not publish the event
@@ -85,7 +87,9 @@ date. A separate Supplier Booking API serves requests from this read model. An A
 authenticates each supplier and enforces a per-supplier rate limit. Optionally, a webhook notifier sends
 change notifications to suppliers that can receive them, which reduces polling.
 
-![Supplier booking feed pull flow](diagrams/01-supplier-booking-feed-2-flow.svg)
+![Supplier booking feed pull flow](diagrams/01-supplier-booking-feed-2-flow.png)
+
+*Vector version: [01-supplier-booking-feed-2-flow.svg](diagrams/01-supplier-booking-feed-2-flow.svg)*
 
 A single request works as follows. The supplier calls the gateway with a bearer token and a cursor. The
 gateway validates the token, extracts the supplier ID from the token, and checks the supplier's rate limit.
@@ -212,9 +216,18 @@ The same flight sold by three vendors appears three times, and the cheapest is n
 The API has no pagination, no authentication, no idempotency on the booking call, and no handling for a
 price that changes between search and booking.
 
+The service is drawn as one instance in front of one database. There is nothing to scale horizontally
+because the in-process cache and the sequential loop make instances non-interchangeable, and the single
+database has no replica, so one disk failure takes out both the stored results and the booking records. The
+diagram also uses the wrong verbs where it shows them: a search drawn as POST cannot be cached by anything
+between the client and us, and a booking status change drawn as GET has side effects on a method that proxies
+and browsers may replay.
+
 ### Proposed design
 
-![Vendor aggregation architecture](diagrams/02-vendor-aggregation-1-architecture.svg)
+![Vendor aggregation architecture](diagrams/02-vendor-aggregation-1-architecture.png)
+
+*Vector version: [02-vendor-aggregation-1-architecture.svg](diagrams/02-vendor-aggregation-1-architecture.svg)*
 
 The Search API owns the public contract: authentication through the gateway, cursor pagination, and the
 cache lookup. The Aggregator owns parallel fan-out, normalisation, de-duplication and ranking. One adapter
@@ -225,7 +238,9 @@ others. A durable offers store keeps recent quotes, their alternative vendors, a
 statistics. A refresher schedules proactive fetches for popular routes. The booking service re-prices with
 the chosen vendor before creating a hold.
 
-![Vendor aggregation search flow](diagrams/02-vendor-aggregation-2-flow.svg)
+![Vendor aggregation search flow](diagrams/02-vendor-aggregation-2-flow.png)
+
+*Vector version: [02-vendor-aggregation-2-flow.svg](diagrams/02-vendor-aggregation-2-flow.svg)*
 
 A search on a cache miss works as follows. The Search API builds the cache key from origin, destination,
 date, passenger count and cabin, with a schema version prefix. The key is not in the cache, so the service
@@ -275,9 +290,14 @@ remaining routes are fetched on demand and cached. Cost per vendor per day is a 
 and an alarm. The cost is lower freshness for rarely searched routes, where the traffic does not justify the
 spend.
 
-**De-duplication and ranking.** A flight is identified by marketing carrier, flight number, departure date
-and time, origin, destination and cabin; an itinerary is the ordered list of its flights. Codeshare flights
-are mapped to the operating carrier where the vendor provides it. The same itinerary from several vendors
+**De-duplication and ranking.** A flight is identified by marketing carrier, marketing flight number,
+departure date and time, origin, destination and cabin; an itinerary is the ordered list of its flights.
+Codeshares are a product decision that I state rather than leave implicit: with the marketing key, the same
+aircraft sold under two airline codes appears as two itineraries, which is what the traveller actually buys,
+because the ticket, fare rules and loyalty credit differ by marketing carrier. If the product wants codeshares
+collapsed, the key becomes operating carrier plus operating flight number and the cheapest marketing code wins.
+I default to the marketing key and carry the operating carrier as a display attribute. The same itinerary from
+several vendors
 collapses to one entry with the lowest total price, where total means price including taxes and fees
 normalised to one currency, because vendors differ in what they include and comparing base fares would choose
 the wrong result. Ties are resolved by the vendor's historical booking success rate, then by vendor ID so the
@@ -289,10 +309,23 @@ chosen vendor, shows the user any price change and asks them to confirm, creates
 using our booking ID as the idempotency reference, authorises payment, and then confirms. No payment is taken
 before the vendor confirms a hold. Section 5 covers this flow in detail.
 
-**API corrections.** Cursor pagination over the ranked list. OAuth for partner callers and session
-authentication for the app. UTC timestamps. A price-valid-until field on every offer so the client can tell
-the user how long the quote holds. A batch endpoint that prices several itineraries in one call, so the client
-does not make one request per result.
+**API corrections.** Pagination first, because the API has none and the interviewer asks cursor or offset.
+Offset is simple and lets a client jump to page forty, but the ranked list changes under it as late vendor
+responses merge in, so a client paging with offsets sees duplicates and gaps, and a large offset is a scan on
+whatever serves it. A cursor encodes the sort key and identity of the last item plus the version of the result
+set it was taken from, so the next page continues from the same snapshot, and if the set has been rebuilt the
+server can say so instead of silently shifting. I choose cursors and give up random access, which no traveller
+uses. OAuth for partner callers and session authentication for the app. UTC timestamps. GET for search with
+the parameters in the query string so the response is cacheable, POST for booking with an idempotency key. A
+price-valid-until field on every offer so the client can tell the user how long the quote holds. A batch
+endpoint that prices several itineraries in one call, so the client does not make one request per result.
+
+**Horizontal scaling and replication.** Once the cache is in Redis and the vendor calls are parallel, the
+Search API and the Aggregator are stateless and scale by adding instances behind the load balancer, with
+adapters scaled per vendor because their concurrency caps differ. The offers store and the booking database
+get a synchronous replica with automatic failover and read replicas for the ops views. Redis runs with a
+replica per shard. The point to make aloud is that none of this was possible with the original in-process
+`HashMap`, because every new instance would have started cold and disagreed with the others.
 
 ### Connectivity management
 
@@ -414,7 +447,17 @@ class. Each part can then be tested on its own.
 another, so latency is the sum of all vendors. I would submit the calls to a bounded executor concurrently,
 with a timeout per vendor and an overall deadline, and return whatever has completed by the deadline.
 
-**8. Smaller improvements.** Constructor injection for dependencies so the class is testable. An immutable
+**8. Security, which reviewers are told to look for.** The `from`, `to` and `date` strings go straight into
+vendor calls, so a crafted value becomes whatever the vendor client builds with it, which is query or header
+injection if the client concatenates URLs; the `SearchRequest` validation in improvement 1 is the fix, applied
+once at the boundary. Vendor credentials must come from a secrets store injected into each client, never from
+a constant or a properties file in the repository, and they must never appear in a log line or an exception
+message. The cache key must not include anything user-identifying, because a shared cache keyed by user leaks
+one user's results to another on a collision. And the `catch (Exception e) { return null; }` is a security
+problem as well as a correctness one: it swallows authentication failures from vendors, so an expired
+credential looks like an empty market instead of an incident.
+
+**9. Smaller improvements.** Constructor injection for dependencies so the class is testable. An immutable
 `Offer` type instead of a mutable `Flight`. Comparison on an enumeration instead of string equality.
 Structured log lines that include the vendor and the cache key. Tests at three levels: unit tests for the
 merge logic, adapter tests that replay recorded vendor responses, and one integration test for the
@@ -422,7 +465,7 @@ orchestration.
 
 ### The corrected code
 
-The code below applies all eight improvements. It is Java 17 with no framework, so the structure is visible;
+The code below applies all nine improvements. It is Java 17 with no framework, so the structure is visible;
 in production the constructors would be wired by Spring or Guice. The numbered comments refer to the
 improvements above.
 
@@ -465,7 +508,7 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
     }
 }
 
-// Improvement 8: immutable result types.
+// Improvement 9: immutable result types.
 
 public record FlightKey(String marketingCarrier, String flightNumber, LocalDateTime departure,
                         String origin, String destination, Cabin cabin) {}
@@ -527,7 +570,7 @@ public final class SearchService {
     private final TtlPolicy ttlPolicy;
     private final OfferMerger merger;
 
-    // Improvement 8: constructor injection.
+    // Improvement 9: constructor injection.
     public SearchService(VendorRegistry vendors, OfferCache cache, ExecutorService fanOut,
                          Duration deadline, TtlPolicy ttlPolicy, OfferMerger merger) {
         this.vendors = Objects.requireNonNull(vendors);
@@ -579,8 +622,13 @@ public final class SearchService {
                 collected.addAll(future.join());
             } else {
                 missing.add(entry.getKey());
-                future.cancel(true); // stop paying for a call whose result will not be used
-                log.warn("vendor {} missing for key {}: {}", entry.getKey(), key, describeFailure(future));
+                // Describe before cancelling: after cancel() the future reports CancellationException,
+                // which would hide whether the vendor failed or was merely slow.
+                String why = describeFailure(future);
+                // cancel() only marks this future; it does not interrupt the vendor call in flight.
+                // The spend on a slow call is bounded by the vendor client's own timeout, not by this line.
+                future.cancel(true);
+                log.warn("vendor {} missing for key {}: {}", entry.getKey(), key, why);
             }
         }
 
@@ -607,14 +655,24 @@ public final class SearchService {
     }
 }
 
-// Improvement 6: merging is a pure function, so it can be tested without a network.
+// Improvement 6: merging is deterministic and has no I/O, so it can be tested without a network.
+// Tie-break order matches the design text: price, then the vendor's trailing booking success rate, then
+// vendor ID so two instances produce the same page. The success rates are injected, not looked up here.
 public final class OfferMerger {
+    private final Map<Vendor, Double> bookingSuccessRate;
+
+    public OfferMerger(Map<Vendor, Double> bookingSuccessRate) {
+        this.bookingSuccessRate = Map.copyOf(bookingSuccessRate);
+    }
+
     public List<Offer> merge(List<Offer> offers) {
         Map<FlightKey, Offer> cheapest = new HashMap<>();
         for (Offer offer : offers) {
             cheapest.merge(offer.flight(), offer, (a, b) -> {
                 int byPrice = a.total().compareTo(b.total());
                 if (byPrice != 0) return byPrice < 0 ? a : b;
+                int byReliability = Double.compare(rate(b.vendor()), rate(a.vendor())); // higher rate first
+                if (byReliability != 0) return byReliability < 0 ? a : b;
                 return a.vendor().compareTo(b.vendor()) <= 0 ? a : b; // deterministic tie-break
             });
         }
@@ -622,14 +680,18 @@ public final class OfferMerger {
                 .sorted(Comparator.comparing(Offer::total).thenComparing(Offer::vendor))
                 .toList();
     }
+
+    private double rate(Vendor vendor) {
+        return bookingSuccessRate.getOrDefault(vendor, 0.0);
+    }
 }
 ```
 
 Three notes on what is deliberately not in this code. The lock that prevents simultaneous refreshes of one
 key, and the per-vendor raw cache, belong in the Redis implementation of `OfferCache`, not in the service.
 The executor is injected and bounded because an unbounded pool during a vendor outage is how a service runs
-out of threads. The merger is a pure function because that is where ranking errors occur and it should be
-tested without a network.
+out of threads. The merger does no I/O and depends only on its inputs and the injected success rates,
+because that is where ranking errors occur and it should be tested without a network.
 
 ### The general questions in this round
 
@@ -714,6 +776,13 @@ indexing problem, and booking is a correctness problem rather than a throughput 
 The error budget for booking at 99.99% is small and is not spent on experiments. Search at 99.95% has about
 twenty minutes per month, which is where ranking changes and A/B tests are run.
 
+In CAP terms, I make the choice per piece of data rather than for the system. Inventory and reservations are
+CP: during a partition between the primary and its replica, booking for the affected hotels refuses writes
+rather than risking an oversell, because a sold-out message is recoverable and a double booking is not. Search,
+the availability cache and the index are AP: they keep answering from whatever copy they have, accept
+staleness, and rely on the booking path to be the final check. Saying this explicitly matters because the
+interviewer is listening for whether I know the trade-off is made per table, not per system.
+
 ### 4.5 Design tenets
 
 Inventory is a count per room type per night, not a list of physical rooms. This matches how hotels sell and
@@ -785,7 +854,9 @@ it inserts the reservation as pending with an expiry time and inserts an outbox 
 
 ### 4.8 Architecture and flows
 
-![Hotel booking architecture](diagrams/04-hotel-booking-1-architecture.svg)
+![Hotel booking architecture](diagrams/04-hotel-booking-1-architecture.png)
+
+*Vector version: [04-hotel-booking-1-architecture.svg](diagrams/04-hotel-booking-1-architecture.svg)*
 
 Clients enter through the gateway. Search requests go to the search service and its two derived stores.
 Booking requests go to the booking service, which writes to inventory and bookings and calls the payment
@@ -793,7 +864,9 @@ service. Change data capture on inventory and the outbox relay on bookings both 
 the index, notifications, hotel synchronisation and the ledger consume from Kafka. Hotels write inventory
 through the inventory API. The sweeper runs on a schedule against the booking service.
 
-![Hotel booking hold and confirm flow](diagrams/04-hotel-booking-2-flow.svg)
+![Hotel booking hold and confirm flow](diagrams/04-hotel-booking-2-flow.png)
+
+*Vector version: [04-hotel-booking-2-flow.svg](diagrams/04-hotel-booking-2-flow.svg)*
 
 The main flow works as follows. The client sends a booking request with an idempotency key. The booking
 service inserts the key; if it already exists, the service returns the stored result and stops. Otherwise it
@@ -1055,6 +1128,13 @@ each call to a metered supplier has a price, so cost per search has a budget.
 Ten million searches per day across ten suppliers would be a hundred million supplier calls per day without
 caching. The cache hit ratio is therefore not an optimisation; it is the design.
 
+In CAP terms the split is the same as for hotels but with a twist. Our booking state and ledger are CP: a
+partition means we stop advancing bookings rather than risk a charge without a ticket. Search is AP: it serves
+stale cache, partial results and even results with a supplier missing, because a traveller would rather see most
+of the market than an error page. The twist is that the supplier owns the inventory, so even our CP booking path
+can only be consistent with what the supplier tells us; the re-price and hold steps are how we convert an
+eventually consistent quote into a consistent commitment at the last possible moment.
+
 ### 5.5 Design tenets
 
 A search result is a quote, not a hold. Every price is re-validated with the supplier before money moves.
@@ -1108,7 +1188,9 @@ its outbox event in its own transaction.
 
 ### 5.8 Architecture and flows
 
-![Flight booking architecture](diagrams/05-flight-booking-1-architecture.svg)
+![Flight booking architecture](diagrams/05-flight-booking-1-architecture.png)
+
+*Vector version: [05-flight-booking-1-architecture.svg](diagrams/05-flight-booking-1-architecture.svg)*
 
 Search traffic flows from the gateway to the Search API, the Aggregator, the adapters and the suppliers, with
 Redis beside the Search API and the offers store beside the Aggregator. Booking traffic flows from the gateway
@@ -1116,7 +1198,9 @@ to the booking service, which calls the adapters for hold and ticket and the pay
 capture and void, and writes its state and outbox to the bookings database. The relay publishes to Kafka,
 which the resolver and the downstream consumers read.
 
-![Flight booking saga flow](diagrams/05-flight-booking-2-flow.svg)
+![Flight booking saga flow](diagrams/05-flight-booking-2-flow.png)
+
+*Vector version: [05-flight-booking-2-flow.svg](diagrams/05-flight-booking-2-flow.svg)*
 
 The booking flow works as follows. The client submits a booking for an offer with an idempotency key. The
 booking service re-prices with the supplier. If the price has changed, it returns a 409 response with the new
@@ -1156,9 +1240,12 @@ a measurable price-change rate at re-pricing, which is monitored and alarmed.
 
 #### 5.10.2 De-duplication and ranking
 
-A flight is identified by marketing carrier, flight number, departure date and time, origin, destination and
-cabin, and an itinerary is the ordered list of its flights. Codeshare flights are mapped to the operating
-carrier where the supplier provides it. The same itinerary from several suppliers collapses to one entry with
+A flight is identified by marketing carrier, marketing flight number, departure date and time, origin,
+destination and cabin, and an itinerary is the ordered list of its flights. Codeshares stay separate under this
+key, because a traveller buying the Lufthansa code and one buying the United code on the same aircraft receive
+different tickets, fare rules and loyalty credit; the operating carrier is shown as an attribute. Collapsing
+codeshares is possible by switching the key to operating carrier and operating flight number, and I would do
+that only if the product asked for it. The same itinerary from several suppliers collapses to one entry with
 the lowest total, where total includes taxes and fees normalised to one currency, because suppliers differ in
 what they include and comparing base fares would choose incorrectly. Ties are resolved by the supplier's
 historical ticketing success rate, then by supplier ID for a deterministic order. Every supplier's offer is
@@ -1391,7 +1478,9 @@ one transaction; on a timeout, records the attempt as timed out and the payment 
 
 ### 6.8 Architecture and flows
 
-![Payments architecture](diagrams/06-payments-1-architecture.svg)
+![Payments architecture](diagrams/06-payments-1-architecture.png)
+
+*Vector version: [06-payments-1-architecture.svg](diagrams/06-payments-1-architecture.svg)*
 
 Booking services call the payment service with idempotency keys. The payment service writes to its own
 database and the ledger, and calls a provider through the router and the provider's adapter. Providers send
@@ -1400,7 +1489,9 @@ missed. The outbox relay publishes to Kafka, which booking consumes for outcomes
 for its near-real-time pass. Reconciliation also reads the daily settlement reports and the ledger, and writes
 to a discrepancy queue that finance operations works through.
 
-![Payments authorise with timeout flow](diagrams/06-payments-2-flow.svg)
+![Payments authorise with timeout flow](diagrams/06-payments-2-flow.png)
+
+*Vector version: [06-payments-2-flow.svg](diagrams/06-payments-2-flow.svg)*
 
 The flow that matters most works as follows. Booking requests an authorisation with the booking ID as the
 idempotency key. The payment service inserts the payment as created and the idempotency row in one
@@ -1629,16 +1720,56 @@ choice gives up.
 
 # Appendix
 
-The appendix covers the prompts from the question bank that the six main answers do not: the one remaining
-Staff architecture prompt in the top five, two recent Staff platform critiques, the Senior-level prompts that
-appear after a down-level, and a one-page sheet for the general platform questions.
+The appendix covers the prompts from the question bank that the six main answers do not and that have no
+home elsewhere: the one remaining Staff architecture prompt in the top five, two recent Staff platform
+critiques, the Senior-level prompts that appear after a down-level, two short answers for prompts reported
+twice, and a one-page sheet for the general platform questions. Prompts that already have a full
+seventeen-section answer in the system-design folder are listed in the cross-reference table first, so nothing
+in the bank is left without a pointer.
 
+- A0. Where the rest of the question bank is answered
 - A1. Architecture: concert ticket booking with a flash-sale opening
 - A2. Platform critique: a pre-drawn hotel search design
 - A3. Platform critique: the promo service
 - A4. Senior architecture: top-K trending hotels
 - A5. Senior architecture: multi-source ingestion with approval and bank settlement, and the two reconciliation variants
 - A6. Fundamentals sheet for the general platform questions
+- A7. Senior architecture: the "X users are viewing this room" counter
+- A8. Senior LLD: a shadow-testing framework
+
+---
+
+## A0. Where the rest of the question bank is answered
+
+| Bank prompt | Where the answer is | What to carry over from this document |
+|---|---|---|
+| S6 ride-sharing (Uber, Lyft) | [27-ride-sharing.md](../system-design/27-ride-sharing.md) | Dispatch owner key and conditional transitions are the same one-owner idea as the seat row in A1 |
+| S3, S9, R1, R8, B1–B5 flight search and booking as a standalone design | [26-flight-search-and-booking.md](../system-design/26-flight-search-and-booking.md) | Sections 2 and 5 here are the platform-round and saga views of the same system; 26 is the full seventeen-section walk |
+| S9 second half: design YouTube | [11-youtube.md](../system-design/11-youtube.md) | The rejection there was "lack of depth"; lead with the transcoding DAG and the upload flow, not the CDN |
+| S11 stock exchange HLD | [25-stock-exchange.md](../system-design/25-stock-exchange.md) | The down-level there was thin NFRs; state latency, throughput and determinism as numbers in the first five minutes |
+| R23 and the WhatsApp platform prompt: chat with 1:1, groups, read receipts | [09-chat-system.md](../system-design/09-chat-system.md) | |
+| R17 and the 2023 platform prompt: rate limiter with per-provider limits | [01-rate-limiter.md](../system-design/01-rate-limiter.md) | The flat answer reported there was "Redis TTL"; the doc gives the token bucket in Redis with Lua, the local fallback, and why per-provider buckets differ from per-user ones |
+| R19 URL shortener | [05-url-shortener.md](../system-design/05-url-shortener.md) | |
+| R6 location sharing with time and location restrictions | [14-nearby-friends.md](../system-design/14-nearby-friends.md) for the location fan-out; the restriction rules are a permissions table checked at publish time | |
+| R18 distributed scheduler over 500M URL rows; exactly-once payments on Kafka | [06-web-crawler.md](../system-design/06-web-crawler.md) for the URL frontier and politeness; section 6 here for exactly-once | Partition the table by `next_due` bucket, lease a bucket per worker with a heartbeat, and make the hit idempotent on `(id, scheduled_at)` |
+| R13 trending songs; R5 trending hotels | A4 here | |
+| R4 top-K heavy hitters | A4 here, plus [18-ad-click-event-aggregation.md](../system-design/18-ad-click-event-aggregation.md) for the exact path | |
+| S12 car-dealer reconciliation; R10 activity-table reconciliation | 6.10.5 and A5 here | For the vague S12 prompt, the clarifying questions are the answer: which two parties, what is the matching key, what is the interval, who consumes discrepancies |
+| B6 hotel review system with external rating jobs; B7 inventory from internal plus external sources | Section 2 here, with the adapters pulling reviews or inventory instead of fares | The dedup key changes; the per-source budget, breaker and freshness policy do not |
+| D2 GDPR service performance | A6 database internals plus section 1's projection pattern | Erasure requests are a write path; serve lookups from a projection, batch deletes by partition, and keep an audit of what was erased |
+| Platform E: file storage, notification LLD, e-commerce | [12-google-drive.md](../system-design/12-google-drive.md), [07-notification-system.md](../system-design/07-notification-system.md); e-commerce is 4 plus 6 here with a catalogue search from A2 | |
+| R21 blocklisted domains, R20 SIM-card number store, R14 multilingual DB, R7 elevator, R11 tag management | Not written; one-paragraph shapes in the note below | |
+
+The five unwritten prompts are small enough to carry as shapes. Blocklisted domains: a Bloom filter sized for
+the 30-day list at a one-in-a-thousand false-positive rate shipped to clients, with a definitive check against
+the server for positives. SIM-card numbers: pre-generate the 10-digit space in blocks, shuffle within a block,
+hand out from a Redis list per block and record sold numbers in a relational table with a unique constraint, so
+"unpredictable" comes from the shuffle and "no duplicates" from the constraint. Multilingual database: a
+translations table keyed by entity, field and locale with a fallback chain, never a column per language. Elevator:
+a state machine per car and a scheduler that assigns calls by direction and distance, with the interesting
+part being the request queue as a sorted set per direction. Tag management at 500 reviews a second: a stream
+job extracts tags, writes `(hotel, tag, count)` into a store keyed by tag, and "top 10 hotels for good
+location" is one sorted-set read per tag.
 
 ---
 
@@ -1732,14 +1863,18 @@ The hold expiry sweeper releases expired holds.
 
 ### A1.8 Architecture and flows
 
-![Concert booking architecture](diagrams/A1-concert-booking-1-architecture.svg)
+![Concert booking architecture](diagrams/A1-concert-booking-1-architecture.png)
+
+*Vector version: [A1-concert-booking-1-architecture.svg](diagrams/A1-concert-booking-1-architecture.svg)*
 
 Buyers load the event page from the content delivery network. Joining the sale goes through the gateway to the
 waiting room, which writes to Redis. Admitted buyers reach the booking service, which writes to seat inventory
 and orders and calls payment. The outbox relay and change data capture publish to Kafka; ticket issuance, email,
 analytics, anti-fraud and the seat map cache consume from it.
 
-![Concert booking admission and hold flow](diagrams/A1-concert-booking-2-flow.svg)
+![Concert booking admission and hold flow](diagrams/A1-concert-booking-2-flow.png)
+
+*Vector version: [A1-concert-booking-2-flow.svg](diagrams/A1-concert-booking-2-flow.svg)*
 
 The flow works as follows. The buyer joins the queue and receives a signed token containing their position.
 They poll every few seconds. When their position is reached, the waiting room returns an admitted token valid
@@ -1916,7 +2051,9 @@ database load.
 
 ### Proposed design
 
-![Hotel search critique proposed design](diagrams/A2-hotel-search-critique-1-architecture.svg)
+![Hotel search critique proposed design](diagrams/A2-hotel-search-critique-1-architecture.png)
+
+*Vector version: [A2-hotel-search-critique-1-architecture.svg](diagrams/A2-hotel-search-critique-1-architecture.svg)*
 
 Search is served from derived stores. Change data capture on the inventory and rate database publishes to
 Kafka. An index updater maintains a search index with one document per hotel containing location, amenities,
@@ -2006,7 +2143,9 @@ atomic counter, concurrent bookings exceed the budget.
 
 ### Proposed design
 
-![Promo service proposed design](diagrams/A3-promo-critique-1-architecture.svg)
+![Promo service proposed design](diagrams/A3-promo-critique-1-architecture.png)
+
+*Vector version: [A3-promo-critique-1-architecture.svg](diagrams/A3-promo-critique-1-architecture.svg)*
 
 The admin console calls the Promo API through a gateway that authenticates and rate limits. The API exposes
 `POST /v1/promos` to create, `PUT /v1/promos/{id}/status` to change status, `PATCH /v1/promos/{id}` for other
@@ -2085,7 +2224,9 @@ aggregation point that becomes a bottleneck.
 
 ### The design
 
-![Top-K trending architecture](diagrams/A4-topk-trending-1-architecture.svg)
+![Top-K trending architecture](diagrams/A4-topk-trending-1-architecture.png)
+
+*Vector version: [A4-topk-trending-1-architecture.svg](diagrams/A4-topk-trending-1-architecture.svg)*
 
 Web and app servers publish view and booking events to Kafka, partitioned by hotel ID. A stream processing job,
 for example Flink, maintains for each region and each one-minute window a count-min sketch and a small heap of
@@ -2169,7 +2310,9 @@ system we do not control.
 
 ### The design
 
-![Multi-source ingestion architecture](diagrams/A5-ingestion-1-architecture.svg)
+![Multi-source ingestion architecture](diagrams/A5-ingestion-1-architecture.png)
+
+*Vector version: [A5-ingestion-1-architecture.svg](diagrams/A5-ingestion-1-architecture.svg)*
 
 Each source has an adapter whose only job is to read from that source and emit records in a common schema with
 a source identifier and a source offset. The queue adapter consumes the queue. The MySQL adapter uses change
@@ -2257,16 +2400,57 @@ unsettled older than one day.
 Short direct answers to the general questions reported in the platform round that the main sections do not
 already cover.
 
-**Strong versus eventual consistency, and consistency across regions.** Strong consistency means every read
-sees the latest committed write; eventual consistency means reads may be stale for a bounded period and all
-replicas converge. I decide per piece of data: inventory, payments and anything with a uniqueness rule are
-strongly consistent; search results, counters and feeds are eventually consistent. Across regions, the options
+**CAP, strong versus eventual consistency, and consistency across regions.** CAP says that when a network
+partition happens, a distributed store has to choose between staying consistent and staying available; the
+partition itself is not optional, so the real question is which of the two to give up and for which data. Strong
+consistency means every read sees the latest committed write; eventual consistency means reads may be stale for
+a bounded period and all replicas converge. I decide per piece of data: inventory, payments and anything with a
+uniqueness rule are CP and strongly consistent, because the cost of a wrong answer is money; search results,
+counters and feeds are AP and eventually consistent, because the cost of a stale answer is a retry. The follow-up
+question is usually PACELC: when there is no partition, I still trade latency against consistency, and that is
+where read replicas and caches live. Across regions, the options
 are a single write region per piece of data with asynchronous replicas elsewhere, active-active writes with a
 conflict rule such as last-writer-wins or a merge function, or a consensus system that pays a cross-region
 round trip on every write. For a booking system I choose a home region per hotel: all writes for a hotel go to
 one region, reads can be served anywhere with a staleness window, and a writer's own reads are routed to the
 home region briefly so they see their own writes. Active-active is reserved for data where conflicts are
 harmless, such as user preferences.
+
+**Authentication and authorisation for external clients, and what the API gateway owns.** For partner
+systems calling us machine to machine, the options are API keys, OAuth 2.0 client credentials, and mutual
+TLS. API keys are simple and are the weakest: a long-lived secret in a header, with no standard expiry or
+scope, so I accept them only for low-value read APIs and rotate them. OAuth client credentials give a
+short-lived access token scoped to one partner and a small set of permissions, issued by an authorisation
+server we run or buy, and revocation is just refusing to issue the next token; this is my default for partner
+APIs. Mutual TLS binds the connection to a certificate and is the strongest, but partners have to manage
+certificates, so I offer it to those who can. For our own apps, the user signs in once and holds a short-lived
+JWT plus a refresh token.
+
+On JWTs specifically: the gateway validates the signature against the issuer's published keys, checks expiry,
+audience and issuer, and rejects anything it cannot verify. The token is short-lived, about fifteen minutes,
+because a JWT cannot be revoked before it expires; the refresh token is the thing we can revoke. Claims carry
+the subject and coarse roles or scopes, never anything sensitive, because a JWT is only signed, not encrypted.
+Services behind the gateway still authorise: the gateway answers "who is this" and the service answers "may
+they do this to this resource", so a supplier ID always comes from the verified token and never from a query
+parameter. The alternative of having the gateway issue tokens as well as verify them is where the friction in
+one reported round came from; I keep issuance in an identity service and verification at the edge, so the
+gateway holds public keys only.
+
+What the gateway owns: TLS termination, authentication, per-client rate limiting and quotas, request
+validation against the published contract, routing and versioning, and request IDs for tracing. What it does
+not own: business authorisation, data transformation beyond protocol translation, and anything that needs a
+database, because those belong to the service that owns the data and a gateway that holds business logic
+becomes a second monolith.
+
+**Load balancers.** A layer-4 balancer routes on IP and port and is fast and protocol-agnostic; a layer-7
+balancer reads HTTP and can route by path, header or cookie, terminate TLS, retry idempotent requests, and
+apply per-route health checks. I put a layer-7 balancer at the edge because path routing and per-route health
+are what I need there, and layer-4 or client-side balancing between internal services where the hop count
+matters. Algorithms: round robin for homogeneous stateless services, least outstanding requests when
+latencies vary, consistent hashing when a cache or a connection needs to stick to one instance. Health checks
+should exercise a dependency-light endpoint so a slow database does not take every instance out of rotation
+at once. The balancer itself is made redundant with two instances behind an anycast or DNS front, because an
+unreplicated balancer is the single point of failure everyone forgets.
 
 **Local versus global caching.** A local cache lives in the process, responds in microseconds, and is
 inconsistent across instances; a global cache such as Redis is shared, responds in about a millisecond, and
@@ -2354,3 +2538,135 @@ publish are made atomic by a transactional outbox or change data capture.
 event. It gives one ordered stream of truth from a table that several services write, with no change to those
 services. The cost is coupling consumers to the table's schema, which I manage by transforming the raw change
 into a stable event schema in a projector before other teams consume it.
+
+---
+
+## A7. Senior architecture: the "X users are viewing this room" counter
+
+### The problem
+
+The hotel page shows "12 people are looking at this property right now". It is reported twice in the bank,
+once as a backend design and once as a front-end platform question, and the interviewer wants to see whether I
+can keep a near-real-time counter cheap, approximately right, and honest.
+
+### Requirements as numbers
+
+Twenty million searches a day lead to perhaps two hundred million property page views, around 2,300 a second
+on average and ten thousand at peak, across a few million properties, most of which have nobody looking at
+them at any given moment. The counter should reflect arrivals and departures within a few seconds, be read on
+every page view, and may be approximate, because the number is a nudge and not a ledger. The one hard
+requirement is that it must never be wildly wrong in a way that a user could prove, for instance showing
+twelve viewers on a page with one, because that is the kind of thing that ends up in a screenshot.
+
+### The design
+
+Each page view sends a heartbeat every thirty seconds while the tab is open, carrying the property ID and an
+anonymous session ID. The counter service writes `ZADD viewers:{propertyId} now sessionId` into Redis, so the
+sorted set for a property holds one member per session scored by its last heartbeat. The read is
+`ZCOUNT viewers:{propertyId} now-60s +inf`, which counts sessions seen in the last minute. Expiry is free:
+either a periodic `ZREMRANGEBYSCORE` on write, or simply counting only recent scores and letting a TTL on the
+whole key clean up properties nobody is viewing. The read is served through the page's own API response and
+cached for a few seconds per property, so ten thousand views a second become a few hundred Redis reads.
+
+### Decisions and alternatives
+
+**Where the count lives.** The options were a relational row per property incremented and decremented, a
+Redis integer incremented on arrival and decremented on departure, or a Redis sorted set of sessions with
+timestamps. The criteria were correctness when a departure is missed, which is most departures because tabs
+are closed and phones are locked, and cost at ten thousand writes a second. A counter that relies on a
+decrement drifts upward forever, since the decrement never arrives, and the relational row is a hot-row
+contention problem for no benefit. The sorted set makes the count self-healing: a session that stops
+heartbeating simply ages out. What I give up is the memory of one entry per active session, which at a few
+hundred thousand concurrent viewers is a few tens of megabytes.
+
+**Approximate versus exact.** The heartbeat interval and the sixty-second window mean the count lags a
+departure by up to a minute and double-counts a user with two tabs. That is acceptable. If the product wanted
+to cap memory further, a HyperLogLog per property per minute gives a cardinality estimate within two percent in
+twelve kilobytes, at the cost of not being able to expire individual sessions; I would start with the sorted
+set and move to HyperLogLog only for the handful of properties with thousands of concurrent viewers.
+
+**Honesty.** Show nothing below a threshold of about three, because "1 person is viewing" is both creepy and
+verifiably about the user themselves. Round upward in buckets at higher numbers. And never fabricate: the
+alternative of a seeded random number is a dark pattern that regulators in several markets have fined.
+
+### Where two requests race
+
+Two heartbeats from the same session are two `ZADD`s on the same member; the later score wins and the count
+is unchanged. A read during a write sees either the old or the new score; both are valid. Redis sorted sets
+are single-threaded per key, so there is no partial state.
+
+### Failure handling
+
+If Redis is unavailable, the page shows nothing for the widget rather than a stale or made-up number, because
+the feature is a nudge and the page is the product. If heartbeats are delayed by a slow client, the count is
+briefly low, which is the safe direction. If a bot opens thousands of sessions on one property, the number
+spikes; the gateway's per-IP rate limit and a per-property cap on displayed value bound the damage.
+
+### Metrics
+
+Heartbeats per second, Redis write and read p99, the distribution of displayed counts, the fraction of pages
+showing the widget, and a sampled comparison of the count against the number of distinct sessions in the
+analytics stream for the same minute, which is how I would know the window and interval are tuned right.
+
+---
+
+## A8. Senior LLD: a shadow-testing framework
+
+### The problem
+
+A function `a()` is being replaced by `a_updated()`. We want to run both on real inputs, compare the outputs,
+persist the results, and tag every run with a `feature_id` so that one framework serves every migration the
+team does. The interviewer walks from a concrete `int f1(int, int)` to generics to persistence, and is watching
+for whether the abstraction is introduced when it is needed and not before.
+
+### The shape of the answer, in the order the interviewer walks it
+
+Start concrete. For `int f1(int a, int b)`, the shadow is a function that calls both implementations, compares
+the two integers, records a match or a mismatch with the inputs, and returns the old result, because the old
+implementation is still the one in production. That is a dozen lines and it is correct; I would say so, and
+then say what breaks when the second team wants to use it.
+
+Generalise the types. The inputs become a type parameter `I` and the output `O`, the two implementations are
+`Function<I, O>`, and the comparison is a `BiPredicate<O, O>` that defaults to `equals` but can be supplied,
+because floating-point outputs, timestamps and lists in different orders need a tolerant comparison. The
+result is a small record: the feature ID, a hash or a serialised form of the input, both outputs, whether they
+matched, the two latencies, and the time. Exceptions are outputs too: if the new implementation throws and the
+old one does not, that is the most important mismatch to record.
+
+Make the shadow safe. The new implementation runs on a separate bounded executor with a timeout so that it
+can never slow the production path or exhaust its threads, and the comparison and persistence happen off the
+request thread. Sampling is a parameter per feature, because shadowing every call of a hot function doubles its
+cost. The framework must never let the new implementation's side effects reach production: the function under
+shadow has to be pure, or the new implementation runs against a stubbed dependency, and I would say that
+constraint out loud because it is the one that makes or breaks real use.
+
+Persist. Three entities: `feature` with its ID, name, owner, sampling rate and status; `shadow_run` with the
+feature ID, a run ID, and when it started and stopped; and `shadow_result` with the run ID, the input
+fingerprint, the two outputs, the match flag, the two latencies and the timestamp. Results are written in
+batches through a queue to a relational table partitioned by feature and day, because the write rate is the
+sampled call rate and nobody needs a result row synchronously. The queries are mismatch rate per feature per
+hour, the first N mismatching inputs for a feature so an engineer can reproduce them, and the latency
+distribution of new against old.
+
+Decide. A feature flips from shadow to live when its mismatch rate has been below a threshold for a window and
+its p99 latency is within budget; the framework exposes that as a report, and the flip itself stays a human
+decision behind a feature flag, because the framework cannot know which mismatches are the new code being
+right.
+
+### Where two requests race
+
+Two shadow calls for the same input in the same millisecond write two result rows, which is correct, since they
+are two observations. Changing a feature's sampling rate while calls are in flight affects only subsequent
+calls. A run that is stopped while results are buffered flushes the buffer before marking the run stopped.
+
+### Failure handling
+
+If the new implementation throws, times out or hangs, the old result is returned and the failure is recorded;
+the production path never sees it. If the results queue is down, results are dropped with a counter, not
+blocked, because losing shadow data is cheaper than slowing production. If the persistence store falls behind,
+the queue absorbs it and the dashboard shows lag.
+
+### Metrics
+
+Shadow calls per feature, mismatch rate, exception rate of the new implementation, added latency on the
+production path, which should be near zero, dropped results, and queue lag.
